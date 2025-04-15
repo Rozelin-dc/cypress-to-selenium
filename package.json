@@ -1,0 +1,15 @@
+{
+  "name": "cypress-to-selenium",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "convert": "node index.js convert",
+    "original-driver": "node index.js collect"
+  },
+  "dependencies": {
+    "typescript": "^5.8.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.1"
+  }
+}
