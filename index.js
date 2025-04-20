@@ -16,30 +16,50 @@ const ORIGINAL_COMMAND_LIST = fs.existsSync(ORIGINAL_COMMAND_LIST_FILE)
  * @returns {string}
  */
 function escapeJavaString(raw) {
-  return raw.replace(/^'(.*)'$/g, '$1').replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
+  return raw
+    .replace(/^'(.*)'$/g, '$1')
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
 }
 
 /**
- * @typedef {{ method: string, args: ts.NodeArray<ts.Expression> }} ChainItem
+ * @typedef {{ method: string, args: ReadonlyArray<ts.Expression> }} ChainItem
  */
 /**
- * @param {ts.CallExpression} callExpr
+ * @param {ts.Node} callExpr
  * @returns {ChainItem[]}
  */
-function extractCyChain(callExpr) {
+function extractChain(callExpr) {
   /** @type {ChainItem[]} */
   const chain = []
-  /** @type {ts.Node} */
   let current = callExpr
 
-  while (ts.isCallExpression(current)) {
-    const expr = current.expression
-    if (ts.isPropertyAccessExpression(expr)) {
-      chain.unshift({ method: expr.name.getText(), args: current.arguments })
-      current = expr.expression
-    } else if (ts.isIdentifier(expr)) {
-      chain.unshift({ method: expr.getText(), args: current.arguments })
-      break
+  while (
+    ts.isCallExpression(current) ||
+    ts.isPropertyAccessExpression(current)
+  ) {
+    if (ts.isCallExpression(current)) {
+      let method = ''
+      let args = current.arguments
+      if (ts.isPropertyAccessExpression(current.expression)) {
+        method = current.expression.name.escapedText.toString()
+        current = current.expression.expression
+      } else if (ts.isIdentifier(current.expression)) {
+        method = current.expression.escapedText.toString()
+        current = current.expression
+      }
+      chain.unshift({
+        method,
+        args,
+      })
+    } else if (ts.isPropertyAccessExpression(current)) {
+      const method = current.name.escapedText.toString()
+      chain.unshift({
+        method,
+        args: [],
+      })
+      current = current.expression
     } else {
       break
     }
@@ -54,20 +74,121 @@ let tempVarIndex = 0
  * @param {string} driverName
  * @returns {string}
  */
+function convertChainToJava(chain, driverName = 'driver') {
+  if (chain[0].method === 'expect') {
+    return convertExpectChainToJava(chain)
+  } else {
+    return convertCyChainToJava(chain, driverName)
+  }
+}
+/**
+ * @param {ChainItem[]} chain
+ * @returns {string}
+ */
+function convertExpectChainToJava(chain) {
+  if (!Array.isArray(chain) || chain.length === 0) {
+    return ''
+  }
+
+  let target = ''
+  let matcher = ''
+  /** @type {ReadonlyArray<ts.Expression>} */
+  let args = []
+
+  for (let i = 0; i < chain.length; i++) {
+    const { method, args: currentArgs } = chain[i]
+
+    switch (method) {
+      case 'expect': {
+        target = currentArgs[0]?.getText() ?? ''
+        break
+      }
+      case 'to':
+      case 'be':
+      case 'and':
+      case 'have':
+      case 'that':
+      case 'with': {
+        // no-op for chaining methods
+        break
+      }
+      case 'true': {
+        matcher = 'isTrue'
+        break
+      }
+      case 'false': {
+        matcher = 'isFalse'
+        break
+      }
+      case 'null':
+      case 'undefined': {
+        matcher = 'isNull'
+        break
+      }
+      case 'eq':
+      case 'equal': {
+        matcher = 'equals'
+        args = currentArgs
+        break
+      }
+      case 'deep': {
+        if (chain[i + 1] && ['equal', 'eq'].includes(chain[i + 1].method)) {
+          matcher = 'equals'
+          args = chain[i + 1].args
+          i++ // skip next
+        }
+        break
+      }
+      default: {
+        return `// Unsupported expect chain: ${chain
+          .map((c) => c.method)
+          .join('.')}`
+      }
+    }
+  }
+
+  switch (matcher) {
+    case 'isTrue': {
+      return `AssertJUnit.assertTrue(${target});`
+    }
+    case 'isFalse': {
+      return `AssertJUnit.assertFalse(${target});`
+    }
+    case 'isNull': {
+      return `AssertJUnit.assertNull(${target});`
+    }
+    case 'equals': {
+      const expected = args[0]?.getText() ?? '/* missing expected */'
+      return `AssertJUnit.assertEquals(${expected}, ${target});`
+    }
+    default: {
+      return `// Unsupported matcher in expect: ${matcher}`
+    }
+  }
+}
+/**
+ * @param {ChainItem[]} chain
+ * @param {string} driverName
+ * @returns {string}
+ */
 function convertCyChainToJava(chain, driverName = 'driver') {
-  let expr = `${driverName}`
+  const expr = [`${driverName}`]
 
   for (let i = 0; i < chain.length; i++) {
     const { method, args } = chain[i]
     switch (method) {
       case 'contains': {
-        if (i != 0 && i === chain.length - 1) {
+        if (i !== 0 && i === chain.length - 1) {
           // The last contains in the chain is considered an assertion.
           const argText = args[0].getText()
-          expr = `WebElement element${tempVarIndex} = ${expr};\n`
-          expr += `    AssertJUnit.assertTrue(element${tempVarIndex}.getText().contains("${escapeJavaString(
-            argText
-          )}"));`
+          expr[expr.length - 1] = `WebElement element${tempVarIndex} = ${
+            expr[expr.length - 1]
+          }`
+          expr.push(
+            `AssertJUnit.assertTrue(element${tempVarIndex}.getText().contains("${escapeJavaString(
+              argText
+            )}"))`
+          )
           tempVarIndex++
           break
         }
@@ -81,79 +202,155 @@ function convertCyChainToJava(chain, driverName = 'driver') {
             argText
           )}')]")`
         }
-        expr += `.findElement(${selectorExpr})`
+        expr[expr.length - 1] += `.findElement(${selectorExpr})`
+        break
+      }
+      case 'eq': {
+        if (args.length < 1 || !ts.isNumericLiteral(args[0])) {
+          expr[expr.length - 1] += '/* unsupported eq syntax */'
+          break
+        }
+        expr[expr.length - 1] = expr[expr.length - 1].replace(
+          /(.*)findElement/g,
+          '$1findElements'
+        )
+        expr[expr.length - 1] += `.get(${args[0].text})`
+        break
+      }
+      case 'first': {
+        expr[expr.length - 1] = expr[expr.length - 1].replace(
+          /(.*)findElement/g,
+          '$1findElements'
+        )
+        expr[expr.length - 1] += '.get(0)'
+        break
+      }
+      case 'last': {
+        expr[
+          expr.length - 1
+        ] = `List<WebElement> elements${tempVarIndex} = ${expr[
+          expr.length - 1
+        ].replace(/(.*)findElement/g, '$1findElements')}`
+        expr.push(
+          `elements${tempVarIndex}.get(elements${tempVarIndex}.size() - 1)`
+        )
+        tempVarIndex++
         break
       }
       case 'click': {
-        expr += '.click()'
+        expr[expr.length - 1] += `.click()`
         break
       }
       case 'type': {
         const typeText = ts.isStringLiteral(args[0])
           ? `"${escapeJavaString(args[0].text)}"`
           : args[0].getText()
-        expr += `.sendKeys(${typeText})`
+        expr[expr.length - 1] += `.sendKeys(${typeText})`
         break
       }
       case 'should': {
-        const condition = args[0].getText()
-        if (condition === 'be.visible') {
-          return `AssertJUnit.assertTrue(${expr}.isDisplayed());`
-        } else if (condition === 'not.be.visible') {
-          return `AssertJUnit.assertFalse(${expr}.isDisplayed());`
+        if (args.length < 1 || !ts.isStringLiteral(args[0])) {
+          expr[expr.length - 1] += '/* unsupported should syntax */'
+          break
         }
+        const condition = args[0].text
+        let assertMethod = ''
+        let getConditionMethod = ''
+        switch (condition) {
+          case 'be.visible': {
+            assertMethod = 'assertTrue'
+            getConditionMethod = 'isDisplayed'
+            break
+          }
+          case 'not.be.visible': {
+            assertMethod = 'assertFalse'
+            getConditionMethod = 'isDisplayed'
+            break
+          }
+          case 'not.exist': {
+            expr[expr.length - 1] = `try {
+        ${expr[expr.length - 1]};
+        AssertJUnit.fail("Element should not exist")
+    } catch (NoSuchElementException e) {}`
+            expr.push(driverName)
+            break
+          }
+          default: {
+            expr[expr.length - 1] += `/* unsupported should condition: ${condition} */`
+            break
+          }
+        }
+        if (assertMethod === '' || getConditionMethod === '') {
+          break
+        }
+        expr[expr.length - 1] = `WebElement element${tempVarIndex} = ${
+          expr[expr.length - 1]
+        }`
+        expr.push(
+          `AssertJUnit.${assertMethod}(element${tempVarIndex}.${getConditionMethod}())`
+        )
+        expr.push(`element${tempVarIndex}`)
+        tempVarIndex++
         break
       }
       case 'visit': {
-        const url = ts.isStringLiteral(args[0])
-          ? `"${escapeJavaString(args[0].text)}"`
-          : args[0].getText()
-        expr += `.get(${url})`
-        break
-      }
-      case 'first':
-      case 'last':
-      case 'eq': {
-        expr = expr.replace(/(.*)\.findElement/, '$1.findElements')
-        if (method === 'last') {
-          expr = `List<WebElement> elements${tempVarIndex} = ${expr};\n`
-          expr += `    elements${tempVarIndex}.get(elements${tempVarIndex}.size() - 1)`
-          tempVarIndex++
+        const arg = args[0]
+        if (ts.isStringLiteral(arg)) {
+          expr[expr.length - 1] += `.get("${escapeJavaString(arg.text)}")`
         } else {
-          const index = method === 'eq' ? args[0].getText() : '0'
-          expr += `.get(${index})`
+          expr[expr.length - 1] += `.get(${arg.getText()})`
         }
         break
       }
       case 'request': {
         const [options] = args
         if (i === 0) {
-          expr = ''
+          expr.splice(0)
         } else {
-          expr += `;\n    `
+          expr.push('')
         }
         if (ts.isStringLiteral(options)) {
-          expr += `HttpURLConnection conn = (HttpURLConnection) new URL(${options.getText()}).openConnection();\n`
-          expr += `    conn.setRequestMethod("GET");`
+          expr[
+            expr.length - 1
+          ] += `HttpURLConnection conn = (HttpURLConnection) new URL(${options.getText()}).openConnection()`
+          expr.push('conn.setRequestMethod("GET")')
         } else if (ts.isObjectLiteralExpression(options)) {
-          const urlProp = options.properties.find(
-            (p) => p.name?.getText() === 'url'
+          let url = '"http://localhost"'
+          let method = 'GET'
+          /** @type {string|null} */
+          let bodyJson = null
+
+          options.properties.forEach((p) => {
+            if (!ts.isPropertyAssignment(p)) {
+              return
+            }
+            const name = p.name?.getText()
+            const val = p.initializer.getText()
+            if (name === 'url') {
+              url = val
+            } else if (name === 'method') {
+              method = val.replace(/['"]/g, '')
+            } else if (name === 'body') {
+              bodyJson = p.initializer.getText()
+            }
+          })
+
+          expr.push(
+            `HttpURLConnection conn = (HttpURLConnection) new URL(${url}).openConnection()`
           )
-          const methodProp = options.properties.find(
-            (p) => p.name?.getText() === 'method'
-          )
-          const url =
-            urlProp && ts.isPropertyAssignment(urlProp)
-              ? urlProp.initializer.getText()
-              : '"http://localhost"'
-          const method =
-            methodProp && ts.isPropertyAssignment(methodProp)
-              ? methodProp.initializer.getText().replace(/['"]/g, '')
-              : 'GET'
-          expr += `HttpURLConnection conn = (HttpURLConnection) new URL(${url}).openConnection();\n`
-          expr += `    conn.setRequestMethod("${method.toUpperCase()}");`
+          expr.push(`conn.setRequestMethod("${method.toUpperCase()}")`)
+          if (bodyJson) {
+            expr.push(`conn.setDoOutput(true)`)
+            expr.push(
+              `String jsonInputString = new JSONObject(${bodyJson}).toString()`
+            )
+            expr.push(`try(OutputStream os = conn.getOutputStream()) {
+        byte[] input = jsonInputString.getBytes("utf-8");
+        os.write(input, 0, input.length);
+    }`)
+          }
         } else {
-          expr += `/* unsupported request syntax */`
+          expr.push('/* unsupported request syntax */')
         }
         break
       }
@@ -167,19 +364,19 @@ function convertCyChainToJava(chain, driverName = 'driver') {
               ts.isExpressionStatement(child) &&
               ts.isCallExpression(child.expression)
             ) {
-              const innerChain = extractCyChain(child.expression)
-              innerStatements.push(convertCyChainToJava(innerChain, driverName))
+              const innerChain = extractChain(child.expression)
+              innerStatements.push(convertChainToJava(innerChain, driverName))
             }
           })
-          expr += `;\n` + innerStatements.map((s) => '    ' + s).join('\n')
+          expr.push('')
         } else {
-          expr += `/* unsupported then syntax */`
+          expr.push('/* unsupported then syntax */')
         }
         break
       }
       case 'within': {
         const cb = args[0]
-        const parentSelector = expr
+        const parentSelector = expr[expr.length - 1]
         const tempVar = `scopeElement${tempVarIndex++}`
         if (ts.isFunctionLike(cb)) {
           const body = cb.body
@@ -189,35 +386,37 @@ function convertCyChainToJava(chain, driverName = 'driver') {
               ts.isExpressionStatement(child) &&
               ts.isCallExpression(child.expression)
             ) {
-              const chain = extractCyChain(child.expression)
-              const scopedExpr = convertCyChainToJava(
-                chain,
-                driverName
-              ).replace(driverName, tempVar)
+              const chain = extractChain(child.expression)
+              const scopedExpr = convertChainToJava(chain, tempVar)
               innerStatements.push(scopedExpr)
             }
           })
-          expr = `WebElement ${tempVar} = ${parentSelector};
-    ${innerStatements.join('\n    ')}
-`
+          expr[expr.length - 1] = `WebElement ${tempVar} = ${parentSelector}`
+          expr.push(...innerStatements)
         }
+        break
+      }
+      case 'wait': {
+        if (args.length < 1 || !ts.isNumericLiteral(args[0])) {
+          expr[expr.length - 1] += '/* unsupported wait syntax */'
+          break
+        }
+        const timeout = args[0].text
+        expr[expr.length - 1] += `.wait(${timeout})`
         break
       }
       default: {
         if (ORIGINAL_COMMAND_LIST.includes(method)) {
-          expr += `.${method}(`
-          if (args.length > 0) {
-            expr += args.map((arg) => arg.getText()).join(', ')
-          }
-          expr += ')'
+          expr[expr.length - 1] +=
+            `.${method}(` + args.map((arg) => arg.getText()).join(', ') + `)`
           break
         }
-        expr += `/* unsupported method: ${method} */`
+        expr[expr.length - 1] += `/* unsupported method: ${method} */`
       }
     }
   }
 
-  return expr + ';'
+  return expr.join(`;\n    `) + ';'
 }
 
 /**
@@ -291,34 +490,10 @@ import org.testng.AssertJUnit;
         return
       }
 
-      // expect
-      if (fn === 'expect' && node.arguments.length === 1) {
-        const actual = node.arguments[0].getText()
-        const parent = node.parent
-        if (
-          ts.isCallExpression(parent) &&
-          ts.isPropertyAccessExpression(parent.expression)
-        ) {
-          const matcher = parent.expression.name.getText()
-          const expected = parent.arguments[0]?.getText() ?? ''
-
-          if (matcher === 'to.equal' || matcher === 'to.eq') {
-            output += `    AssertJUnit.assertEquals(${expected}, ${actual});\n`
-            return
-          } else if (matcher === 'to.be.true') {
-            output += `    AssertJUnit.assertTrue(${actual});\n`
-            return
-          } else if (matcher === 'to.be.false') {
-            output += `    AssertJUnit.assertFalse(${actual});\n`
-            return
-          }
-        }
-      }
-
       // chain
-      const chain = extractCyChain(node)
+      const chain = extractChain(node)
       if (chain.length > 0) {
-        const javaCode = convertCyChainToJava(chain)
+        const javaCode = convertChainToJava(chain)
         output += `    ${javaCode}\n`
         return
       }
@@ -405,8 +580,8 @@ function convertCypressCommandsToJava(tsFileName, tsCode) {
        */
       function visit(node) {
         if (ts.isCallExpression(node)) {
-          const chain = extractCyChain(node)
-          const javaChain = convertCyChainToJava(chain, 'this')
+          const chain = extractChain(node)
+          const javaChain = convertChainToJava(chain, 'this')
           javaBody += `    ${javaChain}\n`
         } else {
           node.forEachChild(visit)
@@ -478,7 +653,7 @@ switch (mode) {
 
     const javaClass = `package ${PACKAGE_NAME};
 
-import org.junit.Assert;
+import org.testng.AssertJUnit;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
 import java.net.*;
