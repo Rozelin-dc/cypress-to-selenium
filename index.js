@@ -13,7 +13,7 @@ const ORIGINAL_COMMAND_LIST = fs.existsSync(ORIGINAL_COMMAND_LIST_FILE)
 
 /**
  * @param {string} raw
- * @returns {string}
+ * @return {string}
  */
 function escapeJavaString(raw) {
   return raw
@@ -28,7 +28,7 @@ function escapeJavaString(raw) {
  */
 /**
  * @param {ts.Node} callExpr
- * @returns {ChainItem[]}
+ * @return {ChainItem[]}
  */
 function extractChain(callExpr) {
   /** @type {ChainItem[]} */
@@ -71,19 +71,20 @@ function extractChain(callExpr) {
 let tempVarIndex = 0
 /**
  * @param {ChainItem[]} chain
+ * @param {(node: ts.Node) => void} visitFunc
  * @param {string} [driverName]
- * @returns {string}
+ * @return {string}
  */
-function convertChainToJava(chain, driverName = 'driver') {
+function convertChainToJava(chain, visitFunc, driverName = 'driver') {
   if (chain[0].method === 'expect') {
     return convertExpectChainToJava(chain)
   } else {
-    return convertCyChainToJava(chain, driverName)
+    return convertCyChainToJava(chain, visitFunc, driverName)
   }
 }
 /**
  * @param {ChainItem[]} chain
- * @returns {string}
+ * @return {string}
  */
 function convertExpectChainToJava(chain) {
   if (!Array.isArray(chain) || chain.length === 0) {
@@ -168,10 +169,11 @@ function convertExpectChainToJava(chain) {
 }
 /**
  * @param {ChainItem[]} chain
+ * @param {(node: ts.Node) => void} visitFunc
  * @param {string} [driverName]
- * @returns {string}
+ * @return {string}
  */
-function convertCyChainToJava(chain, driverName = 'driver') {
+function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
   const expr = [`${driverName}`]
 
   for (let i = 0; i < chain.length; i++) {
@@ -360,17 +362,14 @@ function convertCyChainToJava(chain, driverName = 'driver') {
         const cb = args[0]
         if (ts.isFunctionLike(cb)) {
           const body = cb.body
-          const innerStatements = []
-          ts.forEachChild(body, (child) => {
-            if (
-              ts.isExpressionStatement(child) &&
-              ts.isCallExpression(child.expression)
-            ) {
-              const innerChain = extractChain(child.expression)
-              innerStatements.push(convertChainToJava(innerChain, driverName))
-            }
-          })
-          expr.push('')
+          const innerStatements = { value: '' }
+          const innerVisitNode = createVisitNode(
+            innerStatements,
+            driverName,
+            visitFunc
+          )
+          body.forEachChild(innerVisitNode)
+          expr.push(innerStatements.value)
         } else {
           expr.push('/* unsupported then syntax */')
         }
@@ -382,28 +381,25 @@ function convertCyChainToJava(chain, driverName = 'driver') {
         const tempVar = `scopeElement${tempVarIndex++}`
         if (ts.isFunctionLike(cb)) {
           const body = cb.body
-          const innerStatements = []
-          ts.forEachChild(body, (child) => {
-            if (
-              ts.isExpressionStatement(child) &&
-              ts.isCallExpression(child.expression)
-            ) {
-              const chain = extractChain(child.expression)
-              const scopedExpr = convertChainToJava(chain, tempVar)
-              innerStatements.push(scopedExpr)
-            }
-          })
+          const innerStatements = {value: ''}
+          const innerVisitNode = createVisitNode(
+            innerStatements,
+            tempVar,
+            visitFunc
+          )
+          body.forEachChild(innerVisitNode)
           expr[expr.length - 1] = `WebElement ${tempVar} = ${parentSelector}`
-          expr.push(...innerStatements)
+          expr.push(innerStatements.value)
+          expr.push(tempVar)
         }
         break
       }
       case 'wait': {
-        if (args.length < 1 || !ts.isNumericLiteral(args[0])) {
+        if (args.length < 1) {
           expr[expr.length - 1] += '/* unsupported wait syntax */'
           break
         }
-        const timeout = args[0].text
+        const timeout = args[0].getText()
         expr[expr.length - 1] += `.wait(${timeout})`
         break
       }
@@ -429,15 +425,47 @@ function convertCyChainToJava(chain, driverName = 'driver') {
  */
 function createVisitNode(output, driverName, visitFunc) {
   /**
+   * @return {(node: ts.Node) => void}
+   */
+  function getVisitFunc() {
+    return visitFunc ?? visitNode
+  }
+  /**
    * @param {ts.Node} node
+   * @return {void}
    */
   function visitNode(node) {
     if (ts.isCallExpression(node)) {
       const chain = extractChain(node)
-      const javaChain = convertChainToJava(chain, driverName)
+      const javaChain = convertChainToJava(chain, getVisitFunc(), driverName)
       output.value += `    ${javaChain}\n`
+    } else if (ts.isIfStatement(node)) {
+      const condition = node.expression.getText()
+      output.value += `    if (${condition}) {\n`
+      getVisitFunc()(node.thenStatement)
+      output.value += `    }\n`
+      if (node.elseStatement) {
+        output.value += `    else {\n`
+        getVisitFunc()(node.elseStatement)
+        output.value += `    }\n`
+      }
+      return
+    } else if (ts.isForStatement(node)) {
+      const initializer = node.initializer?.getText() ?? ''
+      const condition = node.condition?.getText() ?? ''
+      const incrementor = node.incrementor?.getText() ?? ''
+      output.value += `    for (${initializer}; ${condition}; ${incrementor}) {\n`
+      getVisitFunc()(node.statement)
+      output.value += `    }\n`
+      return
+    } else if (ts.isWhileStatement(node)) {
+      const condition = node.expression.getText()
+      output.value += `    while (${condition}) {\n`
+      getVisitFunc()(node.statement)
+      output.value += `    }\n`
+      return
     } else {
-      node.forEachChild(visitFunc ?? visitNode)
+      node.forEachChild(getVisitFunc())
     }
   }
 
@@ -446,7 +474,7 @@ function createVisitNode(output, driverName, visitFunc) {
 
 /**
  * @param {ts.CallExpression} describeCall
- * @returns {{ className: string, javaCode: string }|null}
+ * @return {{ className: string, javaCode: string }|null}
  */
 function convertDescribeBlock(describeCall) {
   const [descArg, bodyFn] = describeCall.arguments
@@ -475,7 +503,7 @@ import org.testng.AssertJUnit;
   const baseVisitNode = createVisitNode(output, 'driver', visit)
   /**
    * @param {ts.Node} node
-   * @returns {void}
+   * @return {void}
    */
   function visit(node) {
     if (ts.isCallExpression(node)) {
@@ -542,7 +570,7 @@ import org.testng.AssertJUnit;
 /**
  * @param {string} tsFileName
  * @param {string} tsCode
- * @returns {string[]}
+ * @return {string[]}
  */
 function convertCypressCommandsToJava(tsFileName, tsCode) {
   const sourceFile = ts.createSourceFile(
