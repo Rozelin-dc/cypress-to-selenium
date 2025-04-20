@@ -71,7 +71,7 @@ function extractChain(callExpr) {
 let tempVarIndex = 0
 /**
  * @param {ChainItem[]} chain
- * @param {string} driverName
+ * @param {string} [driverName]
  * @returns {string}
  */
 function convertChainToJava(chain, driverName = 'driver') {
@@ -168,7 +168,7 @@ function convertExpectChainToJava(chain) {
 }
 /**
  * @param {ChainItem[]} chain
- * @param {string} driverName
+ * @param {string} [driverName]
  * @returns {string}
  */
 function convertCyChainToJava(chain, driverName = 'driver') {
@@ -276,7 +276,9 @@ function convertCyChainToJava(chain, driverName = 'driver') {
             break
           }
           default: {
-            expr[expr.length - 1] += `/* unsupported should condition: ${condition} */`
+            expr[
+              expr.length - 1
+            ] += `/* unsupported should condition: ${condition} */`
             break
           }
         }
@@ -420,6 +422,29 @@ function convertCyChainToJava(chain, driverName = 'driver') {
 }
 
 /**
+ * @param {{value: string}} output
+ * @param {string} driverName
+ * @param {(node: ts.Node) => void} [visitFunc]
+ * @return {(node: ts.Node) => void}
+ */
+function createVisitNode(output, driverName, visitFunc) {
+  /**
+   * @param {ts.Node} node
+   */
+  function visitNode(node) {
+    if (ts.isCallExpression(node)) {
+      const chain = extractChain(node)
+      const javaChain = convertChainToJava(chain, driverName)
+      output.value += `    ${javaChain}\n`
+    } else {
+      node.forEachChild(visitFunc ?? visitNode)
+    }
+  }
+
+  return visitNode
+}
+
+/**
  * @param {ts.CallExpression} describeCall
  * @returns {{ className: string, javaCode: string }|null}
  */
@@ -430,14 +455,16 @@ function convertDescribeBlock(describeCall) {
   }
 
   const className = descArg.text.replace(/\s+/g, '') + 'Test'
-  let output = `package ${PACKAGE_NAME};
+  const output = {
+    value: `package ${PACKAGE_NAME};
 
 import org.junit.*;
 import org.openqa.selenium.*;
 import org.testng.AssertJUnit;
 
-`
-  output += `public class ${className} {\n  WebDriver driver;\n\n`
+`,
+  }
+  output.value += `public class ${className} {\n  WebDriver driver;\n\n`
 
   const BeforeOrAfter = {
     beforeEach: { annotation: '@Before', method: 'setup', exists: false },
@@ -445,6 +472,7 @@ import org.testng.AssertJUnit;
     before: { annotation: '@BeforeClass', method: 'setupClass', exists: false },
   }
 
+  const baseVisitNode = createVisitNode(output, 'driver', visit)
   /**
    * @param {ts.Node} node
    * @returns {void}
@@ -462,14 +490,14 @@ import org.testng.AssertJUnit;
         const cb = node.arguments[0]
         if (ts.isFunctionLike(cb)) {
           const methodName = BeforeOrAfter[fn].method
-          output += `  ${annotation}\n  public void ${methodName}() {\n`
+          output.value += `  ${annotation}\n  public void ${methodName}() {\n`
           if (annotation === '@Before') {
-            output += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n`
+            output.value += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n`
           } else if (annotation === '@After') {
-            output += `    driver.quit();\n`
+            output.value += `    driver.quit();\n`
           }
           ts.forEachChild(cb.body, visit)
-          output += '  }\n'
+          output.value += '  }\n'
           BeforeOrAfter[fn].exists = true
         }
         return
@@ -481,42 +509,34 @@ import org.testng.AssertJUnit;
         if (ts.isStringLiteral(desc) && ts.isFunctionLike(cb)) {
           const methodName = desc.text.replace(/\s+/g, '_')
           if (fn === 'xit') {
-            output += `  @Ignore\n`
+            output.value += `  @Ignore\n`
           }
-          output += `  @Test\n  public void ${methodName}() {\n`
+          output.value += `  @Test\n  public void ${methodName}() {\n`
           ts.forEachChild(cb.body, visit)
-          output += '  }\n'
+          output.value += '  }\n'
         }
-        return
-      }
-
-      // chain
-      const chain = extractChain(node)
-      if (chain.length > 0) {
-        const javaCode = convertChainToJava(chain)
-        output += `    ${javaCode}\n`
         return
       }
     }
 
-    ts.forEachChild(node, visit)
+    baseVisitNode(node)
   }
 
   ts.forEachChild(bodyFn.body, visit)
 
   // add @Before / @After if not exists
   if (!BeforeOrAfter.beforeEach.exists) {
-    output += `  @Before\n  public void setup() {\n`
-    output += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n  }\n`
+    output.value += `  @Before\n  public void setup() {\n`
+    output.value += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n  }\n`
   }
   if (!BeforeOrAfter.afterEach.exists) {
-    output += `  @AfterMethod\n  public void end() {\n`
-    output += `    driver.quit();\n  }\n`
+    output.value += `  @AfterMethod\n  public void end() {\n`
+    output.value += `    driver.quit();\n  }\n`
   }
 
-  output += '}\n'
+  output.value += '}\n'
 
-  return { className, javaCode: output }
+  return { className, javaCode: output.value }
 }
 
 /**
@@ -573,24 +593,12 @@ function convertCypressCommandsToJava(tsFileName, tsCode) {
       } else {
         body = [func.body]
       }
-      let javaBody = ''
-      /**
-       * @param {ts.Node} node
-       * @returns {void}
-       */
-      function visit(node) {
-        if (ts.isCallExpression(node)) {
-          const chain = extractChain(node)
-          const javaChain = convertChainToJava(chain, 'this')
-          javaBody += `    ${javaChain}\n`
-        } else {
-          node.forEachChild(visit)
-        }
-      }
-      body.forEach(visit)
+      const javaBody = { value: '' }
+      const baseVisitNode = createVisitNode(javaBody, 'this')
+      body.forEach(baseVisitNode)
 
       methods.push(`${methodSignature}
-${javaBody}
+${javaBody.value}
     return this;
 }`)
     }
