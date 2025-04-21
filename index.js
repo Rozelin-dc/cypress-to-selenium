@@ -758,13 +758,17 @@ switch (mode) {
 import org.testng.AssertJUnit;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
+import org.openqa.selenium.chrome.ChromeOptions;
 import java.net.*;
 import java.io.*;
 
 public class ${ORIGINAL_DRIVER_CLASS_NAME} extends ChromeDriver {
+    public ${ORIGINAL_DRIVER_CLASS_NAME}(ChromeOptions options) {
+        super(options);
+    }
 ${methods.join('\n\n')}
 }
-`.trim()
+`
 
     const outPath = path.join(OUTPUT_DIR, `${ORIGINAL_DRIVER_CLASS_NAME}.java`)
     fs.writeFileSync(outPath, javaClass, 'utf8')
