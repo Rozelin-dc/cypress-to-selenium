@@ -521,15 +521,16 @@ import org.junit.*;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.testng.AssertJUnit;
+import org.testng.annotations.*;
 
 `,
   }
   output.value += `public class ${className} {\n`
   indentDepth++
-  output.value += getIndent() + 'WebDriver driver;\n\n'
+  output.value += getIndent() + `${ORIGINAL_DRIVER_CLASS_NAME} driver;\n\n`
 
   const BeforeOrAfter = {
-    beforeEach: { annotation: '@Before', method: 'setup', exists: false },
+    beforeEach: { annotation: '@BeforeMethod', method: 'setup', exists: false },
     afterEach: { annotation: '@AfterMethod', method: 'end', exists: false },
     before: { annotation: '@BeforeClass', method: 'setupClass', exists: false },
   }
@@ -567,7 +568,7 @@ import org.testng.AssertJUnit;
           }
           ts.forEachChild(cb.body, visit)
           indentDepth--
-          output.value += getIndent() + '}\n'
+          output.value += getIndent() + '}\n\n'
           BeforeOrAfter[fn].exists = true
         }
         return
@@ -608,7 +609,7 @@ import org.testng.AssertJUnit;
     output.value +=
       getIndent() + `driver = new ${ORIGINAL_DRIVER_CLASS_NAME}(options);\n`
     indentDepth--
-    output.value += getIndent() + '}\n'
+    output.value += getIndent() + '}\n\n'
   }
   if (!BeforeOrAfter.afterEach.exists) {
     output.value += getIndent() + '@AfterMethod\n'
@@ -616,7 +617,7 @@ import org.testng.AssertJUnit;
     indentDepth++
     output.value += getIndent() + 'driver.quit();\n'
     indentDepth--
-    output.value += getIndent() + '}\n'
+    output.value += getIndent() + '}\n\n'
   }
 
   indentDepth--
