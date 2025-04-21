@@ -11,6 +11,15 @@ const ORIGINAL_COMMAND_LIST = fs.existsSync(ORIGINAL_COMMAND_LIST_FILE)
   ? fs.readFileSync(ORIGINAL_COMMAND_LIST_FILE, 'utf-8').split('\n')
   : []
 
+const TAB_SIZE = 4
+let indentDepth = 0
+/**
+ * @return {string}
+ */
+function getIndent() {
+  return ' '.repeat(TAB_SIZE * indentDepth)
+}
+
 /**
  * @param {string} raw
  * @return {string}
@@ -148,24 +157,31 @@ function convertExpectChainToJava(chain) {
     }
   }
 
+  let code = ''
   switch (matcher) {
     case 'isTrue': {
-      return `AssertJUnit.assertTrue(${target});`
+      code = `AssertJUnit.assertTrue(${target});`
+      break
     }
     case 'isFalse': {
-      return `AssertJUnit.assertFalse(${target});`
+      code = `AssertJUnit.assertFalse(${target});`
+      break
     }
     case 'isNull': {
-      return `AssertJUnit.assertNull(${target});`
+      code = `AssertJUnit.assertNull(${target});`
+      break
     }
     case 'equals': {
       const expected = args[0]?.getText() ?? '/* missing expected */'
-      return `AssertJUnit.assertEquals(${expected}, ${target});`
+      code = `AssertJUnit.assertEquals(${expected}, ${target});`
+      break
     }
     default: {
-      return `// Unsupported matcher in expect: ${matcher}`
+      code = `// Unsupported matcher in expect: ${matcher}`
+      break
     }
   }
+  return getIndent() + code
 }
 /**
  * @param {ChainItem[]} chain
@@ -270,11 +286,14 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             break
           }
           case 'not.exist': {
-            expr[expr.length - 1] = `try {
-        ${expr[expr.length - 1]};
-        AssertJUnit.fail("Element should not exist")
-    } catch (NoSuchElementException e) {}`
-            expr.push(driverName)
+            const temp = expr[expr.length - 1]
+            expr[expr.length - 1] = 'try {'
+            expr.push(' '.repeat(TAB_SIZE) + temp)
+            expr.push(
+              ' '.repeat(TAB_SIZE) +
+                'AssertJUnit.fail("Element should not exist")'
+            )
+            expr.push('} catch (NoSuchElementException e) {}')
             break
           }
           default: {
@@ -348,10 +367,13 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             expr.push(
               `String jsonInputString = new JSONObject(${bodyJson}).toString()`
             )
-            expr.push(`try(OutputStream os = conn.getOutputStream()) {
-        byte[] input = jsonInputString.getBytes("utf-8");
-        os.write(input, 0, input.length);
-    }`)
+            expr.push('try(OutputStream os = conn.getOutputStream()) {')
+            expr.push(
+              ' '.repeat(TAB_SIZE) +
+                'byte[] input = jsonInputString.getBytes("utf-8")'
+            )
+            expr.push(' '.repeat(TAB_SIZE) + 'os.write(input, 0, input.length)')
+            expr.push('}')
           }
         } else {
           expr.push('/* unsupported request syntax */')
@@ -381,7 +403,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
         const tempVar = `scopeElement${tempVarIndex++}`
         if (ts.isFunctionLike(cb)) {
           const body = cb.body
-          const innerStatements = {value: ''}
+          const innerStatements = { value: '' }
           const innerVisitNode = createVisitNode(
             innerStatements,
             tempVar,
@@ -414,7 +436,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
     }
   }
 
-  return expr.join(`;\n    `) + ';'
+  return expr.join(';\n' + getIndent()) + ';'
 }
 
 /**
@@ -438,31 +460,40 @@ function createVisitNode(output, driverName, visitFunc) {
     if (ts.isCallExpression(node)) {
       const chain = extractChain(node)
       const javaChain = convertChainToJava(chain, getVisitFunc(), driverName)
-      output.value += `    ${javaChain}\n`
+      output.value += getIndent() + `${javaChain}\n`
     } else if (ts.isIfStatement(node)) {
       const condition = node.expression.getText()
-      output.value += `    if (${condition}) {\n`
+      output.value += getIndent() + `if (${condition}) {\n`
+      indentDepth++
       getVisitFunc()(node.thenStatement)
-      output.value += `    }\n`
+      indentDepth--
+      output.value += getIndent() + '}\n'
       if (node.elseStatement) {
-        output.value += `    else {\n`
+        output.value += getIndent() + 'else {\n'
+        indentDepth++
         getVisitFunc()(node.elseStatement)
-        output.value += `    }\n`
+        indentDepth--
+        output.value += getIndent() + '}\n'
       }
       return
     } else if (ts.isForStatement(node)) {
       const initializer = node.initializer?.getText() ?? ''
       const condition = node.condition?.getText() ?? ''
       const incrementor = node.incrementor?.getText() ?? ''
-      output.value += `    for (${initializer}; ${condition}; ${incrementor}) {\n`
+      output.value +=
+        getIndent() + `for (${initializer}; ${condition}; ${incrementor}) {\n`
+      indentDepth++
       getVisitFunc()(node.statement)
-      output.value += `    }\n`
+      indentDepth--
+      output.value += getIndent() + '}\n'
       return
     } else if (ts.isWhileStatement(node)) {
       const condition = node.expression.getText()
-      output.value += `    while (${condition}) {\n`
+      output.value += getIndent() + `while (${condition}) {\n`
+      indentDepth++
       getVisitFunc()(node.statement)
-      output.value += `    }\n`
+      indentDepth--
+      output.value += getIndent() + '}\n'
       return
     } else {
       node.forEachChild(getVisitFunc())
@@ -488,11 +519,14 @@ function convertDescribeBlock(describeCall) {
 
 import org.junit.*;
 import org.openqa.selenium.*;
+import org.openqa.selenium.chrome.ChromeOptions;
 import org.testng.AssertJUnit;
 
 `,
   }
-  output.value += `public class ${className} {\n  WebDriver driver;\n\n`
+  output.value += `public class ${className} {\n`
+  indentDepth++
+  output.value += getIndent() + 'WebDriver driver;\n\n'
 
   const BeforeOrAfter = {
     beforeEach: { annotation: '@Before', method: 'setup', exists: false },
@@ -518,14 +552,22 @@ import org.testng.AssertJUnit;
         const cb = node.arguments[0]
         if (ts.isFunctionLike(cb)) {
           const methodName = BeforeOrAfter[fn].method
-          output.value += `  ${annotation}\n  public void ${methodName}() {\n`
+          output.value += getIndent() + `${annotation}\n`
+          output.value += getIndent() + `public void ${methodName}() {\n`
+          indentDepth++
           if (annotation === '@Before') {
-            output.value += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n`
+            output.value +=
+              getIndent() +
+              'ChromeOptions options = new ChromeOptions().addArguments("--headless");\n'
+            output.value +=
+              getIndent() +
+              `driver = new ${ORIGINAL_DRIVER_CLASS_NAME}(options);\n`
           } else if (annotation === '@After') {
-            output.value += `    driver.quit();\n`
+            output.value += getIndent() + 'driver.quit();\n'
           }
           ts.forEachChild(cb.body, visit)
-          output.value += '  }\n'
+          indentDepth--
+          output.value += getIndent() + '}\n'
           BeforeOrAfter[fn].exists = true
         }
         return
@@ -537,11 +579,14 @@ import org.testng.AssertJUnit;
         if (ts.isStringLiteral(desc) && ts.isFunctionLike(cb)) {
           const methodName = desc.text.replace(/\s+/g, '_')
           if (fn === 'xit') {
-            output.value += `  @Ignore\n`
+            output.value += getIndent() + '@Ignore\n'
           }
-          output.value += `  @Test\n  public void ${methodName}() {\n`
+          output.value += getIndent() + '@Test\n'
+          output.value += getIndent() + `public void ${methodName}() {\n`
+          indentDepth++
           ts.forEachChild(cb.body, visit)
-          output.value += '  }\n'
+          indentDepth--
+          output.value += getIndent() + '}\n\n'
         }
         return
       }
@@ -554,14 +599,27 @@ import org.testng.AssertJUnit;
 
   // add @Before / @After if not exists
   if (!BeforeOrAfter.beforeEach.exists) {
-    output.value += `  @Before\n  public void setup() {\n`
-    output.value += `    driver = new ${ORIGINAL_DRIVER_CLASS_NAME}();\n  }\n`
+    output.value += getIndent() + '@Before\n'
+    output.value += getIndent() + 'public void setup() {\n'
+    indentDepth++
+    output.value +=
+      getIndent() +
+      'ChromeOptions options = new ChromeOptions().addArguments("--headless");\n'
+    output.value +=
+      getIndent() + `driver = new ${ORIGINAL_DRIVER_CLASS_NAME}(options);\n`
+    indentDepth--
+    output.value += getIndent() + '}\n'
   }
   if (!BeforeOrAfter.afterEach.exists) {
-    output.value += `  @AfterMethod\n  public void end() {\n`
-    output.value += `    driver.quit();\n  }\n`
+    output.value += getIndent() + '@AfterMethod\n'
+    output.value += getIndent() + 'public void end() {\n'
+    indentDepth++
+    output.value += getIndent() + 'driver.quit();\n'
+    indentDepth--
+    output.value += getIndent() + '}\n'
   }
 
+  indentDepth--
   output.value += '}\n'
 
   return { className, javaCode: output.value }
@@ -610,9 +668,11 @@ function convertCypressCommandsToJava(tsFileName, tsCode) {
       const func = functionNode
 
       const args = func.parameters.map((p) => `${p.name.getText()}`)
-      const methodSignature = `public ${ORIGINAL_DRIVER_CLASS_NAME} ${commandName}(${args
-        .map((a) => `String ${a}`)
-        .join(', ')}) throws Exception {`
+      const methodSignature =
+        getIndent() +
+        `public ${ORIGINAL_DRIVER_CLASS_NAME} ${commandName}(${args
+          .map((a) => `String ${a}`)
+          .join(', ')}) throws Exception {`
 
       /** @type {ReadonlyArray<ts.Node>} */
       let body = []
@@ -622,13 +682,18 @@ function convertCypressCommandsToJava(tsFileName, tsCode) {
         body = [func.body]
       }
       const javaBody = { value: '' }
+      indentDepth++
       const baseVisitNode = createVisitNode(javaBody, 'this')
       body.forEach(baseVisitNode)
 
-      methods.push(`${methodSignature}
-${javaBody.value}
-    return this;
-}`)
+      let method = methodSignature
+      method += '\n'
+      method += javaBody.value
+      method += '\n'
+      method += getIndent() + 'return this;\n'
+      indentDepth--
+      method += getIndent() + '}\n'
+      methods.push(method)
     }
   })
 
@@ -685,6 +750,7 @@ switch (mode) {
   }
   case 'collect': {
     const code = fs.readFileSync(inputPath, 'utf8')
+    indentDepth = 1
     const methods = convertCypressCommandsToJava(inputPath, code)
 
     const javaClass = `package ${PACKAGE_NAME};
