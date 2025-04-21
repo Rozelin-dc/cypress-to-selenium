@@ -554,7 +554,7 @@ import org.testng.annotations.*;
         if (ts.isFunctionLike(cb)) {
           const methodName = BeforeOrAfter[fn].method
           output.value += getIndent() + `${annotation}\n`
-          output.value += getIndent() + `public void ${methodName}() {\n`
+          output.value += getIndent() + `public void ${methodName}() throws Exception {\n`
           indentDepth++
           if (annotation === '@Before') {
             output.value +=
@@ -583,7 +583,7 @@ import org.testng.annotations.*;
             output.value += getIndent() + '@Ignore\n'
           }
           output.value += getIndent() + '@Test\n'
-          output.value += getIndent() + `public void ${methodName}() {\n`
+          output.value += getIndent() + `public void ${methodName}() throws Exception {\n`
           indentDepth++
           ts.forEachChild(cb.body, visit)
           indentDepth--
