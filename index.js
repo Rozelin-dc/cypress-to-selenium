@@ -366,23 +366,56 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           ] += `HttpURLConnection conn = (HttpURLConnection) new URL(${options.getText()}).openConnection()`
           expr.push('conn.setRequestMethod("GET")')
         } else if (ts.isObjectLiteralExpression(options)) {
-          let url = '"http://localhost"'
+          let url = ''
           let method = 'GET'
-          /** @type {string|null} */
-          let bodyJson = null
+          /** @type {string[]} */
+          let body = []
 
           options.properties.forEach((p) => {
             if (!ts.isPropertyAssignment(p)) {
               return
             }
-            const name = p.name?.getText()
+            const name = p.name.getText()
             const val = escapeJavaString(p.initializer)
             if (name === 'url') {
               url = val
             } else if (name === 'method') {
               method = val.replace(/['"]/g, '')
             } else if (name === 'body') {
-              bodyJson = p.initializer.getText()
+              if (ts.isObjectLiteralExpression(p.initializer)) {
+                body.push('JsonObject jsonObject = new JsonObject()')
+                /**
+                 * @param {ts.ObjectLiteralElementLike} prop
+                 * @param {string} parentName
+                 */
+                function visitProperty(prop, parentName) {
+                  if (!ts.isPropertyAssignment(prop)) {
+                    return
+                  }
+
+                  const key = `"${escapeJavaString(prop.name)
+                    .replace(/^"(.*)"$/g, '$1')
+                    .replace(/^'(.*)'$/g, '$1')}"`
+                  if (ts.isObjectLiteralExpression(prop.initializer)) {
+                    const tempVarName = `${key}Inner${tempVarIndex}`
+                    tempVarIndex++
+                    body.push(`JsonObject ${tempVarName} = new JsonObject()`)
+                    prop.initializer.properties.forEach((p) =>
+                      visitProperty(p, tempVarName)
+                    )
+                    body.push(`${parentName}.add(${key}, ${tempVarName})`)
+                  } else {
+                    const value = escapeJavaString(prop.initializer)
+                    body.push(`${parentName}.addProperty(${key}, ${value})`)
+                  }
+                }
+                p.initializer.properties.forEach((p) =>
+                  visitProperty(p, 'jsonObject')
+                )
+                body.push('String inputString = jsonObject.toString()')
+              } else {
+                body.push(`String inputString = ${val}`)
+              }
             }
           })
 
@@ -390,15 +423,13 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             `HttpURLConnection conn = (HttpURLConnection) new URL(${url}).openConnection()`
           )
           expr.push(`conn.setRequestMethod("${method.toUpperCase()}")`)
-          if (bodyJson) {
+          if (body.length > 0) {
             expr.push(`conn.setDoOutput(true)`)
-            expr.push(
-              `String jsonInputString = new JSONObject(${bodyJson}).toString()`
-            )
+            expr.push(...body)
             expr.push('try(OutputStream os = conn.getOutputStream()) {')
             expr.push(
               ' '.repeat(TAB_SIZE) +
-                'byte[] input = jsonInputString.getBytes("utf-8")'
+                'byte[] input = inputString.getBytes("utf-8")'
             )
             expr.push(' '.repeat(TAB_SIZE) + 'os.write(input, 0, input.length)')
             expr.push('}')
@@ -550,6 +581,7 @@ import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeOptions;
 import org.testng.AssertJUnit;
 import org.testng.annotations.*;
+import com.google.gson.JsonObject;
 
 `,
   }
@@ -790,6 +822,7 @@ import org.testng.AssertJUnit;
 import org.openqa.selenium.*;
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.openqa.selenium.chrome.ChromeOptions;
+import com.google.gson.JsonObject;
 import java.net.*;
 import java.io.*;
 
