@@ -21,15 +21,51 @@ function getIndent() {
 }
 
 /**
- * @param {string} raw
+ * @param {ts.Node} node
  * @return {string}
  */
-function escapeJavaString(raw) {
-  return raw
-    .replace(/^'(.*)'$/g, '$1')
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
+function escapeJavaString(node) {
+  if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+    return `"${node.text
+      .replace(/\\/g, '\\\\')
+      .replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n')
+      .replace(/\r/g, '\\r')}"`
+  } else if (ts.isTemplateExpression(node)) {
+    /** @type {string[]} */
+    const parts = []
+
+    const head = node.head.text
+    if (head) {
+      parts.push(
+        `"${head
+          .replace(/\\/g, '\\\\')
+          .replace(/"/g, '\\"')
+          .replace(/\n/g, '\\n')
+          .replace(/\r/g, '\\r')}"`
+      )
+    }
+
+    for (const span of node.templateSpans) {
+      const expr = span.expression.getText()
+      parts.push(expr)
+
+      const tail = span.literal.text
+      if (tail) {
+        parts.push(
+          `"${tail
+            .replace(/\\/g, '\\\\')
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r')}"`
+        )
+      }
+    }
+
+    return parts.join(' + ')
+  } else {
+    return node.getText()
+  }
 }
 
 /**
@@ -198,14 +234,12 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       case 'contains': {
         if (i !== 0 && i === chain.length - 1) {
           // The last contains in the chain is considered an assertion.
-          const argText = args[0].getText()
+          const argText = escapeJavaString(args[0])
           expr[expr.length - 1] = `WebElement element${tempVarIndex} = ${
             expr[expr.length - 1]
           }`
           expr.push(
-            `AssertJUnit.assertTrue(element${tempVarIndex}.getText().contains("${escapeJavaString(
-              argText
-            )}"))`
+            `AssertJUnit.assertTrue(element${tempVarIndex}.getText().contains(${argText}))`
           )
           tempVarIndex++
           break
@@ -213,11 +247,12 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'get':
       case 'find': {
-        const argText = args[0].getText()
-        let selectorExpr = `By.cssSelector("${escapeJavaString(argText)}")`
+        const argText = escapeJavaString(args[0])
+        let selectorExpr = `By.cssSelector(${argText})`
         if (method === 'contains') {
-          selectorExpr = `By.xpath("//*[contains(text(), '${escapeJavaString(
-            argText
+          selectorExpr = `By.xpath("//*[contains(text(), '${argText.replace(
+            /^"(.*)"$/g,
+            '$1'
           )}')]")`
         }
         expr[expr.length - 1] += `.findElement(${selectorExpr})`
@@ -260,9 +295,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
         break
       }
       case 'type': {
-        const typeText = ts.isStringLiteral(args[0])
-          ? `"${escapeJavaString(args[0].text)}"`
-          : args[0].getText()
+        const typeText = escapeJavaString(args[0])
         expr[expr.length - 1] += `.sendKeys(${typeText})`
         break
       }
@@ -317,12 +350,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
         break
       }
       case 'visit': {
-        const arg = args[0]
-        if (ts.isStringLiteral(arg)) {
-          expr[expr.length - 1] += `.get("${escapeJavaString(arg.text)}")`
-        } else {
-          expr[expr.length - 1] += `.get(${arg.getText()})`
-        }
+        expr[expr.length - 1] += `.get(${escapeJavaString(args[0])})`
         break
       }
       case 'request': {
@@ -348,7 +376,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
               return
             }
             const name = p.name?.getText()
-            const val = p.initializer.getText()
+            const val = escapeJavaString(p.initializer)
             if (name === 'url') {
               url = val
             } else if (name === 'method') {
@@ -554,7 +582,8 @@ import org.testng.annotations.*;
         if (ts.isFunctionLike(cb)) {
           const methodName = BeforeOrAfter[fn].method
           output.value += getIndent() + `${annotation}\n`
-          output.value += getIndent() + `public void ${methodName}() throws Exception {\n`
+          output.value +=
+            getIndent() + `public void ${methodName}() throws Exception {\n`
           indentDepth++
           if (annotation === '@Before') {
             output.value +=
@@ -583,7 +612,8 @@ import org.testng.annotations.*;
             output.value += getIndent() + '@Ignore\n'
           }
           output.value += getIndent() + '@Test\n'
-          output.value += getIndent() + `public void ${methodName}() throws Exception {\n`
+          output.value +=
+            getIndent() + `public void ${methodName}() throws Exception {\n`
           indentDepth++
           ts.forEachChild(cb.body, visit)
           indentDepth--
