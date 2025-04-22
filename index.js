@@ -11,6 +11,27 @@ const ORIGINAL_COMMAND_LIST = fs.existsSync(ORIGINAL_COMMAND_LIST_FILE)
   ? fs.readFileSync(ORIGINAL_COMMAND_LIST_FILE, 'utf-8').split('\n')
   : []
 
+const SPECIAL_KEY_MAP = Object.freeze({
+  '{enter}': 'Keys.ENTER',
+  '{backspace}': 'Keys.BACK_SPACE',
+  '{esc}': 'Keys.ESCAPE',
+  '{del}': 'Keys.DELETE',
+  '{tab}': 'Keys.TAB',
+  '{space}': '" "',
+  '{leftarrow}': 'Keys.ARROW_LEFT',
+  '{rightarrow}': 'Keys.ARROW_RIGHT',
+  '{uparrow}': 'Keys.ARROW_UP',
+  '{downarrow}': 'Keys.ARROW_DOWN',
+  '{home}': 'Keys.HOME',
+  '{end}': 'Keys.END',
+  '{pagedown}': 'Keys.PAGE_DOWN',
+  '{pageup}': 'Keys.PAGE_UP',
+  '{ctrl}': 'Keys.CONTROL',
+  '{alt}': 'Keys.ALT',
+  '{shift}': 'Keys.SHIFT',
+  '{meta}': 'Keys.META',
+})
+
 const TAB_SIZE = 4
 let indentDepth = 0
 /**
@@ -295,7 +316,10 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
         break
       }
       case 'type': {
-        const typeText = escapeJavaString(args[0])
+        let typeText = escapeJavaString(args[0])
+        Object.keys(SPECIAL_KEY_MAP).forEach((key) => {
+          typeText = typeText.replaceAll(key, `" + ${SPECIAL_KEY_MAP[key]} + "`)
+        })
         expr[expr.length - 1] += `.sendKeys(${typeText})`
         break
       }
