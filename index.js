@@ -281,7 +281,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'eq': {
         if (args.length < 1 || !ts.isNumericLiteral(args[0])) {
-          expr[expr.length - 1] += '/* unsupported eq syntax */'
+          expr[expr.length - 1] += `/* unsupported eq syntax(${restorationChain(chain[i])}) */`
           break
         }
         expr[expr.length - 1] = expr[expr.length - 1].replace(
@@ -325,7 +325,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'should': {
         if (args.length < 1 || !ts.isStringLiteral(args[0])) {
-          expr[expr.length - 1] += '/* unsupported should syntax */'
+          expr[expr.length - 1] += `/* unsupported should syntax(${restorationChain(chain[i])}) */`
           break
         }
         const condition = args[0].text
@@ -356,7 +356,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           default: {
             expr[
               expr.length - 1
-            ] += `/* unsupported should condition: ${condition} */`
+            ] += `/* unsupported should condition: ${condition}(${restorationChain(chain[i])}) */`
             break
           }
         }
@@ -459,7 +459,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             expr.push('}')
           }
         } else {
-          expr.push('/* unsupported request syntax */')
+          expr.push(`/* unsupported request syntax(${restorationChain(chain[i])}) */`)
         }
         break
       }
@@ -476,7 +476,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           body.forEachChild(innerVisitNode)
           expr.push(innerStatements.value)
         } else {
-          expr.push('/* unsupported then syntax */')
+          expr.push(`/* unsupported then syntax(${restorationChain(chain[i])}) */`)
         }
         break
       }
@@ -501,7 +501,7 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'wait': {
         if (args.length < 1) {
-          expr[expr.length - 1] += '/* unsupported wait syntax */'
+          expr[expr.length - 1] += `/* unsupported wait syntax(${restorationChain(chain[i])}) */`
           break
         }
         const timeout = args[0].getText()
@@ -514,12 +514,25 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             `.${method}(` + args.map((arg) => arg.getText()).join(', ') + `)`
           break
         }
-        expr[expr.length - 1] += `/* unsupported method: ${method} */`
+        expr[expr.length - 1] += `/* unsupported method: ${method}(${restorationChain(chain[i])}) */`
       }
     }
   }
 
   return expr.join(';\n' + getIndent()) + ';'
+}
+
+/**
+ * @param {ChainItem} chain
+ * @return {string}
+ */
+function restorationChain(chain) {
+  /** @type {string[]} */
+  const argsText = []
+  for (const arg of chain.args) {
+    argsText.push(arg.getText())
+  }
+  return `.${chain.method}(${argsText.join(', ')})`
 }
 
 /**
@@ -854,6 +867,7 @@ public class ${ORIGINAL_DRIVER_CLASS_NAME} extends ChromeDriver {
     public ${ORIGINAL_DRIVER_CLASS_NAME}(ChromeOptions options) {
         super(options);
     }
+
 ${methods.join('\n\n')}
 }
 `
