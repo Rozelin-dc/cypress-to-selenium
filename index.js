@@ -167,7 +167,10 @@ function convertExpectChainToJava(chain) {
 
     switch (method) {
       case 'expect': {
-        target = currentArgs[0]?.getText() ?? ''
+        if (currentArgs.length < 1) {
+          return '/* expect() without arguments */'
+        }
+        target = escapeJavaString(currentArgs[0])
         break
       }
       case 'to':
@@ -204,6 +207,18 @@ function convertExpectChainToJava(chain) {
           args = chain[i + 1].args
           i++ // skip next
         }
+        break
+      }
+      case 'lessThan':
+      case 'greaterThan': {
+        if (currentArgs.length < 1) {
+          return `/* expect().${method}() without arguments */`
+        }
+
+        matcher = 'isTrue'
+        target += ` ${method === 'lessThan' ? '<' : '>'} ${escapeJavaString(
+          currentArgs[0]
+        )}`
         break
       }
       default: {
@@ -281,7 +296,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'eq': {
         if (args.length < 1 || !ts.isNumericLiteral(args[0])) {
-          expr[expr.length - 1] += `/* unsupported eq syntax(${restorationChain(chain[i])}) */`
+          expr[expr.length - 1] += `/* unsupported eq syntax(${restorationChain(
+            chain[i]
+          )}) */`
           break
         }
         expr[expr.length - 1] = expr[expr.length - 1].replace(
@@ -325,7 +342,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'should': {
         if (args.length < 1 || !ts.isStringLiteral(args[0])) {
-          expr[expr.length - 1] += `/* unsupported should syntax(${restorationChain(chain[i])}) */`
+          expr[
+            expr.length - 1
+          ] += `/* unsupported should syntax(${restorationChain(chain[i])}) */`
           break
         }
         const condition = args[0].text
@@ -356,7 +375,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           default: {
             expr[
               expr.length - 1
-            ] += `/* unsupported should condition: ${condition}(${restorationChain(chain[i])}) */`
+            ] += `/* unsupported should condition: ${condition}(${restorationChain(
+              chain[i]
+            )}) */`
             break
           }
         }
@@ -383,7 +404,11 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           expr.splice(0)
         }
         if (ts.isStringLiteral(options) || ts.isTemplateLiteral(options)) {
-          expr.push(`HttpURLConnection conn = (HttpURLConnection) new URL(${escapeJavaString(options)}).openConnection()`)
+          expr.push(
+            `HttpURLConnection conn = (HttpURLConnection) new URL(${escapeJavaString(
+              options
+            )}).openConnection()`
+          )
           expr.push('conn.setRequestMethod("GET")')
         } else if (ts.isObjectLiteralExpression(options)) {
           let url = ''
@@ -455,7 +480,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             expr.push('}')
           }
         } else {
-          expr.push(`/* unsupported request syntax(${restorationChain(chain[i])}) */`)
+          expr.push(
+            `/* unsupported request syntax(${restorationChain(chain[i])}) */`
+          )
         }
         break
       }
@@ -472,7 +499,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           body.forEachChild(innerVisitNode)
           expr.push(innerStatements.value)
         } else {
-          expr.push(`/* unsupported then syntax(${restorationChain(chain[i])}) */`)
+          expr.push(
+            `/* unsupported then syntax(${restorationChain(chain[i])}) */`
+          )
         }
         break
       }
@@ -497,7 +526,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
       }
       case 'wait': {
         if (args.length < 1) {
-          expr[expr.length - 1] += `/* unsupported wait syntax(${restorationChain(chain[i])}) */`
+          expr[
+            expr.length - 1
+          ] += `/* unsupported wait syntax(${restorationChain(chain[i])}) */`
           break
         }
         const timeout = args[0].getText()
@@ -510,7 +541,11 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
             `.${method}(` + args.map((arg) => arg.getText()).join(', ') + `)`
           break
         }
-        expr[expr.length - 1] += `/* unsupported method: ${method}(${restorationChain(chain[i])}) */`
+        expr[
+          expr.length - 1
+        ] += `/* unsupported method: ${method}(${restorationChain(
+          chain[i]
+        )}) */`
       }
     }
   }
