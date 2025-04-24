@@ -381,13 +381,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
         const [options] = args
         if (i === 0) {
           expr.splice(0)
-        } else {
-          expr.push('')
         }
-        if (ts.isStringLiteral(options)) {
-          expr[
-            expr.length - 1
-          ] += `HttpURLConnection conn = (HttpURLConnection) new URL(${options.getText()}).openConnection()`
+        if (ts.isStringLiteral(options) || ts.isTemplateLiteral(options)) {
+          expr.push(`HttpURLConnection conn = (HttpURLConnection) new URL(${escapeJavaString(options)}).openConnection()`)
           expr.push('conn.setRequestMethod("GET")')
         } else if (ts.isObjectLiteralExpression(options)) {
           let url = ''
