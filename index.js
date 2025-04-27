@@ -531,8 +531,9 @@ function convertCyChainToJava(chain, visitFunc, driverName = 'driver') {
           ] += `/* unsupported wait syntax(${restorationChain(chain[i])}) */`
           break
         }
-        const timeout = args[0].getText()
-        expr[expr.length - 1] += `.wait(${timeout})`
+        const timeout = escapeJavaString(args[0])
+        expr.push(`Thread.sleep(${timeout})`)
+        expr.push(driverName)
         break
       }
       default: {
